@@ -11,7 +11,7 @@ interface ISubscriber {
 interface IPublishSubscribeService {
     publish(event: IEvent): void;
     subscribe(type: string, handler: ISubscriber): void;
-    // unsubscribe ( /* Question 2 - build this feature */ );
+    unsubscribe(type: string, handler: ISubscriber): void;
 }
 
 
@@ -36,11 +36,39 @@ class MachineRefillEvent implements IEvent {
     constructor(private readonly _refill: number, private readonly _machineId: string) { }
 
     machineId(): string {
-        throw new Error("Method not implemented.");
+        return this._machineId;
+    }
+
+    getRefillQuantity(): number {
+        return this._refill
     }
 
     type(): string {
-        throw new Error("Method not implemented.");
+        return 'refill';
+    }
+}
+
+class LowStockWarningEvent implements IEvent {
+    constructor(private readonly _machineId: string) { }
+
+    machineId(): string {
+        return this._machineId;
+    }
+
+    type(): string {
+        return 'lowStockWarning';
+    }
+}
+
+class StockLevelOkEvent implements IEvent {
+    constructor(private readonly _machineId: string) { }
+
+    machineId(): string {
+        return this._machineId;
+    }
+
+    type(): string {
+        return 'stockLevelOk';
     }
 }
 
@@ -52,13 +80,57 @@ class MachineSaleSubscriber implements ISubscriber {
     }
 
     handle(event: MachineSaleEvent): void {
-        this.machines[2].stockLevel -= event.getSoldQuantity();
+        const machine = this.machines.find(m => m.id === event.machineId());
+
+        if (machine) {
+            machine.stockLevel -= event.getSoldQuantity();
+            console.log(`Machine ${machine.id} sold an item. New stock: ${machine.stockLevel}`);
+
+            if (machine.stockLevel < 3) {
+                console.log(`Machine ${machine.id} is low on stock. Stock: ${machine.stockLevel}`);
+                pubSubService.publish(new LowStockWarningEvent(machine.id));
+            }
+        }
     }
 }
 
 class MachineRefillSubscriber implements ISubscriber {
+    public machines: Machine[];
+
+    constructor(machines: Machine[]) {
+        this.machines = machines;
+    }
+
+    handle(event: MachineRefillEvent): void {
+        const machine = this.machines.find(m => m.id === event.machineId());
+
+        if (machine) {
+            machine.stockLevel += event.getRefillQuantity();
+            console.log(`Machine ${machine.id} refilled. New stock: ${machine.stockLevel}`);
+
+            if (machine.stockLevel >= 3) {
+                console.log(`Machine ${machine.id} stock is ok. Stock: ${machine.stockLevel}`);
+                pubSubService.publish(new StockLevelOkEvent(machine.id));
+            }
+        }
+    }
+}
+
+class StockWarningSubscriber implements ISubscriber {
+    private warningStates: Map<string, boolean> = new Map();
+
     handle(event: IEvent): void {
-        throw new Error("Method not implemented.");
+        if (event instanceof LowStockWarningEvent) {
+            if (!this.warningStates.get(event.machineId())) {
+                console.log(`Low stock warning for machine ${event.machineId()}`);
+                this.warningStates.set(event.machineId(), true);
+            }
+        } else if (event instanceof StockLevelOkEvent) {
+            if (this.warningStates.get(event.machineId())) {
+                console.log(`Stock level OK for machine ${event.machineId()}`);
+                this.warningStates.set(event.machineId(), false);
+            }
+        }
     }
 }
 
@@ -96,21 +168,71 @@ const eventGenerator = (): IEvent => {
     return new MachineRefillEvent(refillQty, randomMachine());
 }
 
+class PubSubService implements IPublishSubscribeService {
+    private subscribers: Map<string, Set<ISubscriber>> = new Map();
+    private eventQueue: IEvent[] = [];
+    private isProcessing = false;
+
+    publish(event: IEvent): void {
+        this.eventQueue.push(event);
+
+        if (!this.isProcessing) {
+            this.processEventQueue();
+        }
+    }
+
+    subscribe(type: string, handler: ISubscriber): void {
+        if (!this.subscribers.has(type)) {
+            this.subscribers.set(type, new Set());
+        }
+        this.subscribers.get(type)!.add(handler);
+    }
+
+    unsubscribe(type: string, handler: ISubscriber): void {
+        if (this.subscribers.has(type)) {
+            this.subscribers.get(type)!.delete(handler);
+        }
+    }
+
+    private processEventQueue(): void {
+        this.isProcessing = true;
+        while (this.eventQueue.length > 0) {
+            const event = this.eventQueue.shift()!;
+            const eventSubscribers = this.subscribers.get(event.type());
+
+            if (eventSubscribers) {
+                eventSubscribers.forEach(subscriber => { subscriber.handle(event) });
+            }
+        }
+        this.isProcessing = false;
+    }
+}
+
+
+const pubSubService = new PubSubService();
+
+const normalCase = async () => {
+    const machines: Machine[] = [new Machine('001'), new Machine('002'), new Machine('003')];
+
+    const saleSubscriber = new MachineSaleSubscriber(machines);
+    const refillSubscriber = new MachineRefillSubscriber(machines);
+    const stockWarningSubscriber = new StockWarningSubscriber();
+
+    pubSubService.subscribe('sale', saleSubscriber);
+    pubSubService.subscribe('refill', refillSubscriber);
+    pubSubService.subscribe('lowStockWarning', stockWarningSubscriber);
+    pubSubService.subscribe('stockLevelOk', stockWarningSubscriber);
+
+    // create 5 random events
+    const events = [1, 2, 3, 4, 5,].map(i => eventGenerator());
+
+    events.map(event => pubSubService.publish(event));
+
+    // log the machines
+    console.log("Final Machines:", machines);
+}
 
 // program
 (async () => {
-    // create 3 machines with a quantity of 10 stock
-    const machines: Machine[] = [new Machine('001'), new Machine('002'), new Machine('003')];
-
-    // create a machine sale event subscriber. inject the machines (all subscribers should do this)
-    const saleSubscriber = new MachineSaleSubscriber(machines);
-
-    // create the PubSub service
-    const pubSubService: IPublishSubscribeService = null as unknown as IPublishSubscribeService; // implement and fix this
-
-    // create 5 random events
-    const events = [1, 2, 3, 4, 5].map(i => eventGenerator());
-
-    // publish the events
-    events.map(pubSubService.publish);
+    await normalCase();
 })();
